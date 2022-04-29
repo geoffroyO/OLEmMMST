@@ -125,8 +125,6 @@ class GenStudentMixtures:
 
     def _update_D(self, s1, S2, s3):
         def find_cost(matQuadk, manifold):
-            """
-            # autodiff version
             @pymanopt.function.autograd(manifold)
             def cost(D):
                 loss = 0
@@ -136,35 +134,16 @@ class GenStudentMixtures:
                     quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
                     loss += quadForm
                 return loss
-            """
 
-            @pymanopt.function.numpy(manifold)
-            def cost(D):
-                tmp = np.swapaxes(D, -2, -1) @ matQuadk
-                tmp = tmp @ D
-                tmp = np.diagonal(tmp, 0, -2, -1)
-                quadForm = np.diagonal(tmp, 0, -2, -1)
-                return np.sum(quadForm) + 1e-7
-
-            @pymanopt.function.numpy(manifold)
-            def grad(D):
-                # TODO try to avoid the loop even if M is small
-                grad_value = np.zeros(D.shape)
-                M = len(D)
-                for m in range(M):
-                    grad_value[:, m] = 2 * matQuadk[m] @ D[:, m]
-                return grad_value + 1e-7
-
-            return cost, grad
+            return cost
 
             # return cost
 
         def opti_D(matQuadk, D_init):
             manifold = Stiefel(*self.D[0].shape)
             solver = ConjugateGradient(beta_rule='PolakRibiere', max_iterations=4000, verbosity=0)
-            cost, grad = find_cost(matQuadk, manifold)
-            # cost = find_cost(matQuadk, manifold)
-            problem = pymanopt.Problem(manifold, cost, egrad=grad)
+            cost = find_cost(matQuadk, manifold)
+            problem = pymanopt.Problem(manifold, cost)
             return solver.solve(problem, D_init)
 
         matQuad = self._compute_matQuad(s1, S2, s3)
@@ -196,11 +175,11 @@ class GenStudentMixtures:
         s4 = stat['s4'] / np.expand_dims(s0, -1)
 
         self.pi = self._update_pi(s0)
+
+        self.D = self._update_D(s1, S2, s3)
         self.mu, v = self._update_mu(s1, s3)
         self.A = self._update_A(v, S2, s3)
         self.nu = self._update_nu(s3, s4)
-        
-        self.D = self._update_D(s1, S2, s3)
 
         self.pi_hist.append(copy.deepcopy(self.pi))
         self.mu_hist.append(copy.deepcopy(self.mu))
