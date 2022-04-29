@@ -23,7 +23,7 @@ from pymanopt.solvers import ConjugateGradient
 
 
 class GenStudentMixtures:
-    def __init__(self, pi, mu, A, D, nu):
+    def __init__(self, pi, mu, A, D, nu, max_iterations=None, verbose=False):
         self.pi = pi
         self.mu = mu
         self.A = A
@@ -35,6 +35,9 @@ class GenStudentMixtures:
         self.A_hist = []
         self.D_hist = []
         self.nu_hist = []
+
+        self.max_iterations = max_iterations
+        self.verbose = verbose
 
     ########################
     ###### Statistics ######
@@ -122,34 +125,50 @@ class GenStudentMixtures:
 
     def _update_D(self, s1, S2, s3):
         def find_cost(matQuadk, manifold):
+            """
+            # autodiff version
+            @pymanopt.function.autograd(manifold)
+            def cost(D):
+                loss = 0
+                M = len(D)
+                E = np.eye(M)
+                for m in range(M):
+                    quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
+                    loss += quadForm
+                return loss
+            """
+
             @pymanopt.function.numpy(manifold)
             def cost(D):
                 tmp = np.swapaxes(D, -2, -1) @ matQuadk
                 tmp = tmp @ D
                 tmp = np.diagonal(tmp, 0, -2, -1)
                 quadForm = np.diagonal(tmp, 0, -2, -1)
-                return np.sum(quadForm)
+                return np.sum(quadForm) + 1e-7
 
             @pymanopt.function.numpy(manifold)
             def grad(D):
                 # TODO try to avoid the loop even if M is small
-                grad = np.zeros(D.shape)
+                grad_value = np.zeros(D.shape)
                 M = len(D)
                 for m in range(M):
-                    grad[m] = 2 * matQuadk[m] @ D[:, m]
-                return grad.T
+                    grad_value[:, m] = 2 * matQuadk[m] @ D[:, m]
+                return grad_value + 1e-7
 
             return cost, grad
 
-        def opti_D(matQuadk):
-            manifold = Stiefel(*matQuadk[0].shape)
-            solver = ConjugateGradient(maxiter=4000)
+            # return cost
+
+        def opti_D(matQuadk, D_init):
+            manifold = Stiefel(*self.D[0].shape)
+            solver = ConjugateGradient(beta_rule='PolakRibiere', max_iterations=4000, verbosity=0)
             cost, grad = find_cost(matQuadk, manifold)
-            problem = pymanopt.Problem(manifold, cost, egrad=grad, verbosity=0)
-            return solver.solve(problem)
+            # cost = find_cost(matQuadk, manifold)
+            problem = pymanopt.Problem(manifold, cost, egrad=grad)
+            return solver.solve(problem, D_init)
 
         matQuad = self._compute_matQuad(s1, S2, s3)
-        d = (delayed(opti_D)(matQuad[k]) for k in range(len(s1)))
+        d = (delayed(opti_D)(matQuad[k], self.D[k].copy()) for k in range(len(s1)))
         D_tmp = np.array(Parallel(n_jobs=multiprocessing.cpu_count())(d))
 
         return self._best_permutation(D_tmp, matQuad)
@@ -210,7 +229,22 @@ class GenStudentMixtures:
                 stat_new['S2'] += stat_tmp['S2'] / mini_batch
                 stat_new['s3'] += stat_tmp['s3'] / mini_batch
                 stat_new['s4'] += stat_tmp['s4'] / mini_batch
-            if (i // mini_batch) % 500 == 0:
-                print(self.pi)
+
             stat = copy.deepcopy(stat_new)
             self._updateParams(stat)
+
+            if self.verbose:
+                if (i // mini_batch) % 500 == 0:
+                    print(self.pi)
+
+            if self.max_iterations is not None:
+                if i // mini_batch == self.max_iterations:
+                    break
+
+    def predict(self, X):
+        cluster_lab = np.zeros(len(X))
+        for i, y in enumerate(X):
+            mst = MST(self.mu, self.A, self.D, self.nu).pdf(y)
+            r = self.pi * mst / MMST(self.pi).pdf(mst)
+            cluster_lab[i] = np.argmax(r)
+        return cluster_lab
