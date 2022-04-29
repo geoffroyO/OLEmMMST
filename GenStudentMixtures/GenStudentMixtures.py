@@ -196,10 +196,11 @@ class GenStudentMixtures:
         s4 = stat['s4'] / np.expand_dims(s0, -1)
 
         self.pi = self._update_pi(s0)
-        self.D = self._update_D(s1, S2, s3)
         self.mu, v = self._update_mu(s1, s3)
         self.A = self._update_A(v, S2, s3)
         self.nu = self._update_nu(s3, s4)
+        
+        self.D = self._update_D(s1, S2, s3)
 
         self.pi_hist.append(copy.deepcopy(self.pi))
         self.mu_hist.append(copy.deepcopy(self.mu))
