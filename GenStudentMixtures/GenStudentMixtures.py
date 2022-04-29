@@ -137,8 +137,6 @@ class GenStudentMixtures:
 
             return cost
 
-            # return cost
-
         def opti_D(matQuadk, D_init):
             manifold = Stiefel(*self.D[0].shape)
             solver = ConjugateGradient(beta_rule='PolakRibiere', max_iterations=4000, verbosity=0)
