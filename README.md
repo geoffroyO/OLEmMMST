@@ -1,7 +1,7 @@
 # OLEmMMST
 Online EM algorithm for MMST
 
-Numpy and Pytorch implementation (Numpy is faster).
+Numpy, Pytorch (not working yet), and jax (not working yet) implementation (Numpy is faster).
 All the functions are in the package *GenStudentMixtures*. Some test are in the
 notebook <code> test.ipynb </code>.
 
