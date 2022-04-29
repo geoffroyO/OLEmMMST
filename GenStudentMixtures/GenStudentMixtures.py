@@ -125,26 +125,13 @@ class GenStudentMixtures:
 
     def _update_D(self, s1, S2, s3):
         def find_cost(matQuadk, manifold):
-            """
-            # autodiff version
-            @pymanopt.function.autograd(manifold)
-            def cost(D):
-                loss = 0
-                M = len(D)
-                E = np.eye(M)
-                for m in range(M):
-                    quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
-                    loss += quadForm
-                return loss
-            """
-
             @pymanopt.function.numpy(manifold)
             def cost(D):
                 tmp = np.swapaxes(D, -2, -1) @ matQuadk
                 tmp = tmp @ D
                 tmp = np.diagonal(tmp, 0, -2, -1)
                 quadForm = np.diagonal(tmp, 0, -2, -1)
-                return np.sum(quadForm) + 1e-7
+                return np.sum(quadForm)
 
             @pymanopt.function.numpy(manifold)
             def grad(D):
@@ -153,17 +140,14 @@ class GenStudentMixtures:
                 M = len(D)
                 for m in range(M):
                     grad_value[:, m] = 2 * matQuadk[m] @ D[:, m]
-                return grad_value + 1e-7
+                return grad_value
 
             return cost, grad
-
-            # return cost
 
         def opti_D(matQuadk, D_init):
             manifold = Stiefel(*self.D[0].shape)
             solver = ConjugateGradient(beta_rule='PolakRibiere', max_iterations=4000, verbosity=0)
             cost, grad = find_cost(matQuadk, manifold)
-            # cost = find_cost(matQuadk, manifold)
             problem = pymanopt.Problem(manifold, cost, egrad=grad)
             return solver.solve(problem, D_init)
 
