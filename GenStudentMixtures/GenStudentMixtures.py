@@ -23,7 +23,7 @@ from pymanopt.solvers import ConjugateGradient
 
 
 class GenStudentMixtures:
-    def __init__(self, pi, mu, A, D, nu, max_iterations=None, verbose=False):
+    def __init__(self, pi, mu, A, D, nu, solver, max_iterations=None, verbose=False):
         self.pi = pi
         self.mu = mu
         self.A = A
@@ -35,6 +35,8 @@ class GenStudentMixtures:
         self.A_hist = []
         self.D_hist = []
         self.nu_hist = []
+
+        self.solver = solver
 
         self.max_iterations = max_iterations
         self.verbose = verbose
@@ -104,10 +106,15 @@ class GenStudentMixtures:
         quadForm = np.diagonal(tmp, 0, -2, -1)
         return np.sum(quadForm)
 
-    @staticmethod
-    def _compute_matQuad(s1, S2, s3):
-        tmp = s1 / np.expand_dims(s3, -1)
-        return S2 - np.expand_dims(tmp, -1) @ s1[:, :, None, :]
+    def _compute_matQuad(self, s1, S2, s3):
+        # TODO check veracity
+        K, M = s3.shape
+        mat_mu = np.expand_dims(self.mu, -1) @ np.swapaxes(np.expand_dims(self.mu, -1), -2, -1)
+        th1 = np.reshape(s3, (K, M, 1, 1)) * np.repeat(mat_mu[:, None, ...], M, 1)
+        th2 = (np.repeat(self.mu[:, None, ...], M, 1).reshape((-1, M, 1)) @
+               np.swapaxes(s1.reshape((-1, M, 1)), -2, -1)).reshape(K, M, M, M)
+        matQuad = (0.5 * (S2 + th1) - th2)
+        return matQuad / self.A[..., None, None]
 
     def _best_permutation(self, D, matQuad):
         # TODO to optimize
@@ -146,10 +153,9 @@ class GenStudentMixtures:
 
         def opti_D(matQuadk, D_init):
             manifold = Stiefel(*self.D[0].shape)
-            solver = ConjugateGradient(beta_rule='PolakRibiere', max_iterations=4000, verbosity=0)
             cost, grad = find_cost(matQuadk, manifold)
             problem = pymanopt.Problem(manifold, cost, egrad=grad)
-            return solver.solve(problem, D_init)
+            return self.solver.solve(problem, D_init)
 
         matQuad = self._compute_matQuad(s1, S2, s3)
         d = (delayed(opti_D)(matQuad[k], self.D[k].copy()) for k in range(len(s1)))
@@ -183,7 +189,7 @@ class GenStudentMixtures:
         self.mu, v = self._update_mu(s1, s3)
         self.A = self._update_A(v, S2, s3)
         self.nu = self._update_nu(s3, s4)
-        
+
         self.D = self._update_D(s1, S2, s3)
 
         self.pi_hist.append(copy.deepcopy(self.pi))
