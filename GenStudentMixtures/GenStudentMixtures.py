@@ -19,11 +19,12 @@ from GenStudentMixtures.Mixture_Multivariate_Student_Generalized import MMST
 
 import pymanopt
 from pymanopt.manifolds import Stiefel
-from pymanopt.solvers import ConjugateGradient
 
 
 class GenStudentMixtures:
-    def __init__(self, pi, mu, A, D, nu, max_iterations=None, verbose=False):
+    def __init__(self, pi, mu, A, D, nu, solver, max_iterations=None, verbose=False):
+        # TODO put the statistics as parameter to be able to store the model before loading new data
+        # TODO integrate initialization if pi, mu A, D, nu are None
         self.pi = pi
         self.mu = mu
         self.A = A
@@ -35,6 +36,10 @@ class GenStudentMixtures:
         self.A_hist = []
         self.D_hist = []
         self.nu_hist = []
+
+        self.stat_hist = []
+
+        self.solver = solver
 
         self.max_iterations = max_iterations
         self.verbose = verbose
@@ -146,10 +151,9 @@ class GenStudentMixtures:
 
         def opti_D(matQuadk, D_init):
             manifold = Stiefel(*self.D[0].shape)
-            solver = ConjugateGradient(beta_rule='PolakRibiere', max_iterations=4000, verbosity=0)
             cost, grad = find_cost(matQuadk, manifold)
             problem = pymanopt.Problem(manifold, cost, egrad=grad)
-            return solver.solve(problem, D_init)
+            return self.solver.solve(problem, D_init)
 
         matQuad = self._compute_matQuad(s1, S2, s3)
         d = (delayed(opti_D)(matQuad[k], self.D[k].copy()) for k in range(len(s1)))
@@ -190,6 +194,8 @@ class GenStudentMixtures:
         self.A_hist.append(copy.deepcopy(self.A))
         self.D_hist.append(copy.deepcopy(self.D))
         self.nu_hist.append(copy.deepcopy(self.nu))
+
+        self.stat_hist.append([s0, s1, S2, s3, s4])
 
     def fit(self, X, gam, mini_batch=50):
         stat = {'s0': np.zeros(len(self.pi)),
