@@ -1,5 +1,6 @@
 import numpy as np
-from numpy.random import choice, shuffle
+from numpy.random import choice, shuffle, permutation
+
 from GenStudentMixtures.Multivariate_Student_Generalized import MST
 
 
@@ -22,9 +23,11 @@ class MMST:
 
         gen = MST(self.mu, self.A, self.D, self.nu).sample(N)
         gen_mix = np.zeros((1, len(self.mu[0])))
-
+        clusters = []
         for k in range(len(self.pi)):
-            gen_mix = np.concatenate((gen_mix, gen[k, classes == k, :]), )
+            gen_mix = np.concatenate((gen_mix, gen[k, classes == k, :]))
+            N_k = (classes == k).sum()
+            clusters += [k] * N_k
         gen_mix = gen_mix[1:]
-        shuffle(gen_mix)
-        return gen_mix
+        permute = permutation(len(clusters))
+        return gen_mix[permute], np.array(clusters)[permute]
