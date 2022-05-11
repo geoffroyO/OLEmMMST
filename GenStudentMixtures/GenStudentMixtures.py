@@ -17,17 +17,25 @@ from GenStudentMixtures.Mixture_Multivariate_Student_Generalized import MMST
 import pymanopt
 from pymanopt.manifolds import Stiefel
 
+import rpy2.robjects as robjects
+import rpy2.robjects.numpy2ri
+
+rpy2.robjects.numpy2ri.activate()
+
+r = robjects.r
+r['source']('TKM.R')
+trimkmeans = robjects.globalenv['trimkmeans']
+
 
 class GenStudentMixtures:
-    def __init__(self, pi, mu, A, D, nu, solver, burnin=False, polyak=None, polyak2=None, max_iterations=None,
-                 verbose=False):
-        # TODO put the statistics as parameter to be able to store the model before loading new data
-        # TODO integrate initialization if pi, mu A, D, nu are None
-        self.pi = pi
-        self.mu = mu
-        self.A = A
-        self.D = D
-        self.nu = nu
+    def __init__(self, n_component, solver, max_iterations=None, verbose=False):
+        self.n_components = n_component
+
+        self.pi = None
+        self.mu = None
+        self.A = None
+        self.D = None
+        self.nu = None
 
         self.pi_hist = []
         self.mu_hist = []
@@ -35,15 +43,26 @@ class GenStudentMixtures:
         self.D_hist = []
         self.nu_hist = []
 
-        self.burnin = burnin
-
-        self.polyak = polyak
-        self.polyak2 = polyak2
+        self.stat_hist = []
 
         self.solver = solver
 
         self.max_iterations = max_iterations
         self.verbose = verbose
+
+    ############################
+    ###### Initialization ######
+    ############################
+
+    def _initalization(self, X, n_first=400):
+        res = trimkmeans(X[:n_first], self.n_components)
+        clusters, self.mu = res[0], res[1]
+
+        self.pi = np.array([(clusters == k).sum() / (clusters != 0).sum() for k in range(1, self.n_components + 1)],
+                           dtype=np.float64)
+        self.D = np.array([np.eye(len(X[0]))] * self.n_components, dtype=np.float64)
+        self.A = np.ones((self.n_components, len(X[0])), dtype=np.float64)
+        self.nu = np.ones((self.n_components, len(X[0])), dtype=np.float64)
 
     ########################
     ###### Statistics ######
@@ -86,7 +105,7 @@ class GenStudentMixtures:
     # Update pi
     @staticmethod
     def _update_pi(s0):
-        return s0  # / s0.sum() depends on initialization
+        return s0 / s0.sum()
 
     # Update mu
     def _update_mu(self, s1, s3):
@@ -106,9 +125,8 @@ class GenStudentMixtures:
     def _loss(D, matQuadk):
         loss = 0
         M = len(D)
-        E = np.eye(M)
         for m in range(M):
-            quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
+            quadForm = D[:, m].T @ matQuadk[m] @ D[:, m]
             loss += np.log(quadForm)
         return loss
 
@@ -117,19 +135,6 @@ class GenStudentMixtures:
         tmp = s1 / np.expand_dims(s3, -1)
         return S2 - np.expand_dims(tmp, -1) @ s1[:, :, None, :]
 
-    def _best_permutation(self, D, matQuad):
-        D_opt = np.zeros(D.shape)
-        for k in range(len(D)):
-            minim_permuted = np.inf
-            matQuadk = matQuad[k]
-            for e in permutations(list(D[k].T)):
-                D_permuted = np.vstack(e).T
-                cost = self._loss(D_permuted, matQuadk)
-                if cost < minim_permuted:
-                    D_opt[k] = D_permuted.copy()
-                    minim_permuted = cost
-        return D_opt
-
     def _update_D(self, s1, S2, s3):
 
         def find_cost(matQuadk, manifold):
@@ -137,9 +142,8 @@ class GenStudentMixtures:
             def cost(D):
                 loss = 0
                 M = len(D)
-                E = np.eye(M)
                 for m in range(M):
-                    quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
+                    quadForm = D[:, m].T @ matQuadk[m] @ D[:, m]
                     loss += np.log(quadForm)
                 return loss
 
@@ -147,34 +151,17 @@ class GenStudentMixtures:
             def grad(D):
                 grad_value = np.zeros(D.shape)
                 M = len(D)
-                E = np.eye(M)
                 for m in range(M):
-                    quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
-                    grad_value[:, m] = 2 * matQuadk[m] @ D @ E[:, m] / quadForm
+                    quadForm = D[:, m].T @ matQuadk[m] @ D[:, m]
+                    grad_value[:, m] = 2 * matQuadk[m] @ D[:, m] / quadForm
                 return grad_value
 
             return cost, grad
-
-        """
-        def find_cost(matQuadk, manifold):
-            @pymanopt.function.autograd(manifold)
-            def cost(D):
-                loss = 0
-                M = len(D)
-                E = np.eye(M)
-                for m in range(M):
-                    quadForm = D @ E[:, m].T @ matQuadk[m] @ D @ E[:, m]
-                    loss += autonp.log(quadForm)
-                return loss
-            return cost
-        """
 
         def opti_D(matQuadk, D_init):
             manifold = Stiefel(*D_init.shape)
             cost, grad = find_cost(matQuadk, manifold)
             problem = pymanopt.Problem(manifold, cost, egrad=grad)
-            # D_init_sa = self._SA_init(D_init, matQuadk)
-
             return self.solver.solve(problem, D_init)
 
         matQuad = self._compute_matQuad(s1, S2, s3)
@@ -184,30 +171,7 @@ class GenStudentMixtures:
         for k in range(K):
             D_tmp[k] = opti_D(matQuad[k], self.D[k].copy())
 
-        return self._best_permutation(D_tmp, matQuad)
-
-    def _SA_init(self, D_initk, matQuadk, times=100, T_0=20):
-        M, _ = D_initk.shape
-        old_val = self._loss(D_initk, matQuadk)
-        for t in range(times):
-            Q = np.eye(M)
-            i = np.random.randint(M - 1)
-            j = np.random.randint(i + 1, M)
-            angle = np.random.uniform(-2 * np.pi, 2 * np.pi)
-            Q[i, i], Q[j, j] = np.cos(angle), np.cos(angle)
-            Q[i, j] = np.sin(angle)
-            Q[j, i] = - np.sin(angle)
-            new_D = Q @ D_initk
-            new_val = self._loss(new_D, matQuadk)
-
-            r = np.random.rand()
-            diff = new_val - old_val
-            temp = T_0 / (1 + t ** 2)
-            if np.exp(-diff / temp) > r:
-                old_val = new_val
-                D_initk = new_D.copy()
-
-        return D_initk
+        return D_tmp
 
     # Update nu
     @staticmethod
@@ -224,43 +188,18 @@ class GenStudentMixtures:
                 new_nu[k, m] = brentq(fun, .01, 100)
         return new_nu.astype(np.float64)
 
-    def _updateParams(self, stat, i):
+    def _updateParams(self, stat):
         s0 = stat['s0']
         s1 = stat['s1'] / s0[:, None, None]
         S2 = stat['S2'] / s0[:, None, None, None]
         s3 = stat['s3'] / np.expand_dims(s0, -1)
         s4 = stat['s4'] / np.expand_dims(s0, -1)
-        if self.polyak is None and self.polyak2 is None:
-            self.pi = self._update_pi(s0)
-            self.D = self._update_D(s1, S2, s3)
-            self.mu, v = self._update_mu(s1, s3)
-            self.A = self._update_A(v, S2, s3)
-            self.nu = self._update_nu(s3, s4)
-        else:
-            if self.polyak is not None:
-                if i >= self.polyak:
-                    norm1, norm2 = 1 / (i - self.polyak + 1), i - self.polyak
-                    self.pi = norm1 * (norm2 * self.pi + self._update_pi(s0))
-                    self.D = norm1 * (norm2 * self.D + self._update_D(s1, S2, s3))
-                    mu_tmp, v = self._update_mu(s1, s3)
-                    self.mu = norm1 * (norm2 * self.mu + mu_tmp)
-                    self.A = norm1 * (norm2 * self.A + self._update_A(v, S2, s3))
-                    self.nu = norm1 * (norm2 * self.nu + self._update_nu(s3, s4))
-            else:
-                polyak1, polyak2 = self.polyak2
-                if i >= polyak1:
-                    norm1, norm2 = 1 / (i - polyak1 + 1), i - polyak1
-                    self.pi = norm1 * (norm2 * self.pi + self._update_pi(s0))
-                    self.D = norm1 * (norm2 * self.D + self._update_D(s1, S2, s3))
-                    mu_tmp, v = self._update_mu(s1, s3)
-                    self.mu = norm1 * (norm2 * self.mu + mu_tmp)
-                    if i < polyak2:
-                        self.A = self._update_A(v, S2, s3)
-                        self.nu = self._update_nu(s3, s4)
-                    else:
-                        norm1, norm2 = 1 / (i - polyak2 + 1), i - polyak2
-                        self.A = norm1 * (norm2 * self.A + self._update_A(v, S2, s3))
-                        self.nu = norm1 * (norm2 * self.nu + self._update_nu(s3, s4))
+
+        self.pi = self._update_pi(s0)
+        self.D = self._update_D(s1, S2, s3)
+        self.mu, v = self._update_mu(s1, s3)
+        self.A = self._update_A(v, S2, s3)
+        self.nu = self._update_nu(s3, s4)
 
         self.pi_hist.append(copy.deepcopy(self.pi))
         self.mu_hist.append(copy.deepcopy(self.mu))
@@ -269,17 +208,13 @@ class GenStudentMixtures:
         self.nu_hist.append(copy.deepcopy(self.nu))
 
     def fit(self, X, gam, mini_batch=50):
+        self._initalization(X)
+
         stat = {'s0': np.zeros(len(self.pi)),
                 's1': np.zeros(self.D.shape),
                 'S2': np.zeros((*self.D.shape, self.mu.shape[-1])),
                 's3': np.zeros(self.A.shape),
                 's4': np.zeros(self.A.shape)}
-        if self.burnin:
-            for i in range(5000):
-                y = X[i]
-                mst = MST(self.mu, self.A, self.D, self.nu).pdf(y)
-                r = self.pi * mst / MMST(self.pi).pdf(mst, y)
-                self.updateStat(y, r, gam[i // mini_batch], stat)
 
         for i in tqdm(range(0, len(X) - mini_batch, mini_batch)):
             stat_new = {'s0': np.zeros(len(self.pi)),
@@ -299,7 +234,8 @@ class GenStudentMixtures:
                 stat_new['s4'] += stat_tmp['s4'] / mini_batch
 
             stat = copy.deepcopy(stat_new)
-            self._updateParams(stat, i // mini_batch)
+            self.stat_hist.append(copy.deepcopy(stat))
+            self._updateParams(stat)
 
             if self.verbose:
                 if (i // mini_batch) % 250 == 0:
